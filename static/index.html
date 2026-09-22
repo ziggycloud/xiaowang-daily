@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f9f8">
+  <meta name="description" content="小汪的日常：待办、规划、成功日记、心得与回顾。">
+  <title>小汪的日常</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/app.js"></script>
+</head>
+<body>
+  <div class="site-shell">
+    <header class="topbar">
+      <a class="brand" href="/" data-link aria-label="小汪的日常首页"><span class="brand-mark">汪</span><span>小汪的日常</span></a>
+      <nav class="nav" aria-label="主导航">
+        <a href="/today" data-link>今日</a>
+        <a href="/plans" data-link>规划</a>
+        <a href="/insights" data-link>记录</a>
+        <a href="/dashboard" data-link>回顾</a>
+      </nav>
+      <button id="backup-button" class="text-button backup-button" type="button" title="下载 SQLite 数据备份">备份数据 <span aria-hidden="true">↗</span></button>
+    </header>
+    <main id="app" tabindex="-1"></main>
+    <footer class="footer"><span>给每一天留一点空间。</span><span>数据只保存在这台电脑上</span></footer>
+  </div>
+  <dialog id="editor-dialog" aria-labelledby="dialog-title"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
