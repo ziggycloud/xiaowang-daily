@@ -23,7 +23,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
  id INTEGER PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'work',
  planned_date TEXT, deadline_date TEXT, due_time TEXT, priority INTEGER NOT NULL DEFAULT 0,
- note TEXT NOT NULL DEFAULT '', plan_id INTEGER, parent_task_id INTEGER,
+ note TEXT NOT NULL DEFAULT '', plan_id INTEGER, milestone_id INTEGER, parent_task_id INTEGER,
  completed_at TEXT, deleted_at TEXT,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
@@ -94,7 +94,10 @@ def init_db():
             con.execute("ALTER TABLE tasks ADD COLUMN deadline_date TEXT")
         if "recurrence_key" not in columns:
             con.execute("ALTER TABLE tasks ADD COLUMN recurrence_key TEXT")
+        if "milestone_id" not in columns:
+            con.execute("ALTER TABLE tasks ADD COLUMN milestone_id INTEGER")
         con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_milestone ON tasks(milestone_id)")
         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_recurrence ON tasks(planned_date,recurrence_key)")
         con.execute("INSERT OR IGNORE INTO task_recurrences(key,start_date) VALUES('daily_english',?)", (today(),))
         # The first version nested both habits under a daily parent and gave them DDLs.
@@ -134,6 +137,17 @@ def update_task_ids(con, ids, statement, values):
     if ids:
         marks = ",".join("?" for _ in ids)
         con.execute(f"UPDATE tasks SET {statement} WHERE id IN ({marks})", tuple(values) + tuple(ids))
+
+
+def sync_milestone_completion(con, milestone_id, stamp):
+    if not milestone_id:
+        return
+    counts = con.execute("""SELECT COUNT(*) total,
+        SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) done
+        FROM tasks WHERE milestone_id=? AND deleted_at IS NULL""", (milestone_id,)).fetchone()
+    if counts["total"]:
+        completed_at = stamp if counts["done"] == counts["total"] else None
+        con.execute("UPDATE milestones SET completed_at=? WHERE id=?", (completed_at, milestone_id))
 
 
 def rows(con, query, args=()):
@@ -226,21 +240,26 @@ def mutate(collection, method, item_id, payload):
         if method == "DELETE":
             if not item_id:
                 raise ValueError("缺少记录编号")
-            existing(con, collection, item_id)
+            old_item = existing(con, collection, item_id)
             if collection == "tasks":
                 update_task_ids(con, task_branch_ids(con, item_id), "deleted_at=?, updated_at=?", (stamp, stamp))
+                sync_milestone_completion(con, old_item.get("milestone_id"), stamp)
             elif collection == "plans":
-                con.execute("UPDATE tasks SET plan_id=NULL WHERE plan_id=?", (item_id,))
+                con.execute("UPDATE tasks SET plan_id=NULL,milestone_id=NULL WHERE plan_id=?", (item_id,))
                 con.execute("UPDATE plans SET parent_id=NULL WHERE parent_id=?", (item_id,))
                 con.execute("DELETE FROM milestones WHERE plan_id=?", (item_id,))
                 con.execute("DELETE FROM prerequisites WHERE plan_id=?", (item_id,))
                 con.execute("DELETE FROM plans WHERE id=?", (item_id,))
+            elif collection == "milestones":
+                con.execute("UPDATE tasks SET milestone_id=NULL WHERE milestone_id=?", (item_id,))
+                con.execute("DELETE FROM milestones WHERE id=?", (item_id,))
             else:
                 con.execute(f"DELETE FROM {collection} WHERE id=?", (item_id,))
             return {"ok": True}
 
         if collection == "tasks":
             old = existing(con, collection, item_id) if item_id else {}
+            old_milestone_id = old.get("milestone_id")
             d = {**old, **payload}
             if old.get("recurrence_key") in ("english_vocab", "english_listening"):
                 d.update(category="learning", planned_date=old["planned_date"],
@@ -256,31 +275,41 @@ def mutate(collection, method, item_id, payload):
                 d["category"] = parent["category"]
                 d["planned_date"] = parent["planned_date"]
                 d["plan_id"] = parent["plan_id"]
+                d["milestone_id"] = parent.get("milestone_id")
             category = d.get("category", "work")
             if category not in ("work", "life", "learning"):
                 raise ValueError("任务分类不正确")
             plan_id = integer(d.get("plan_id"), 1, 1000000000, None)
             if plan_id:
                 existing(con, "plans", plan_id)
+            milestone_id = integer(d.get("milestone_id"), 1, 1000000000, None)
+            if milestone_id:
+                milestone = existing(con, "milestones", milestone_id)
+                if plan_id and milestone["plan_id"] != plan_id:
+                    raise ValueError("里程碑与规划不匹配")
+                plan_id = milestone["plan_id"]
             values = (title, category, date_value(d.get("planned_date")), date_value(d.get("deadline_date", today())), time_value(d.get("due_time")),
-                      integer(d.get("priority"), 0, 2, 0), clean_text(d.get("note")), plan_id,
+                      integer(d.get("priority"), 0, 2, 0), clean_text(d.get("note")), plan_id, milestone_id,
                       stamp if d.get("completed") is True else (None if d.get("completed") is False else d.get("completed_at")), stamp)
             if item_id:
-                con.execute("""UPDATE tasks SET title=?,category=?,planned_date=?,deadline_date=?,due_time=?,priority=?,note=?,plan_id=?,completed_at=?,updated_at=? WHERE id=?""", values + (item_id,))
+                con.execute("""UPDATE tasks SET title=?,category=?,planned_date=?,deadline_date=?,due_time=?,priority=?,note=?,plan_id=?,milestone_id=?,completed_at=?,updated_at=? WHERE id=?""", values + (item_id,))
             else:
-                cur = con.execute("""INSERT INTO tasks(title,category,planned_date,deadline_date,due_time,priority,note,plan_id,completed_at,updated_at,created_at,parent_task_id)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", values + (stamp, parent_task_id))
+                cur = con.execute("""INSERT INTO tasks(title,category,planned_date,deadline_date,due_time,priority,note,plan_id,milestone_id,completed_at,updated_at,created_at,parent_task_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", values + (stamp, parent_task_id))
                 item_id = cur.lastrowid
                 if parent_task_id:
                     update_task_ids(con, task_ancestor_ids(con, item_id), "completed_at=NULL, updated_at=?", (stamp,))
             if not parent_task_id and item_id:
                 descendants = [child_id for child_id in task_branch_ids(con, item_id) if child_id != item_id]
-                update_task_ids(con, descendants, "category=?, planned_date=?, plan_id=?, updated_at=?", (category, values[2], plan_id, stamp))
+                update_task_ids(con, descendants, "category=?, planned_date=?, plan_id=?, milestone_id=?, updated_at=?", (category, values[2], plan_id, milestone_id, stamp))
             if "completed" in payload:
                 branch = task_branch_ids(con, item_id)
                 update_task_ids(con, branch, "completed_at=?, updated_at=?", (stamp if payload["completed"] else None, stamp))
                 if not payload["completed"]:
                     update_task_ids(con, task_ancestor_ids(con, item_id), "completed_at=NULL, updated_at=?", (stamp,))
+            sync_milestone_completion(con, old_milestone_id, stamp)
+            if milestone_id != old_milestone_id:
+                sync_milestone_completion(con, milestone_id, stamp)
         elif collection == "plans":
             old = existing(con, collection, item_id) if item_id else {}
             d = {**old, **payload}
@@ -325,6 +354,9 @@ def mutate(collection, method, item_id, payload):
                 else:
                     cur = con.execute("INSERT INTO milestones(plan_id,title,target_date,weight,completed_at,created_at) VALUES(?,?,?,?,?,?)", values + (stamp,))
                     item_id = cur.lastrowid
+                if "completed" in payload:
+                    con.execute("UPDATE tasks SET completed_at=?,updated_at=? WHERE milestone_id=? AND deleted_at IS NULL",
+                                (completed_at, stamp, item_id))
             else:
                 values = (plan_id, title, completed_at)
                 if item_id:
