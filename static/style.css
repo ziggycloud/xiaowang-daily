@@ -28,6 +28,7 @@ dialog{border:0;border-radius:17px;box-shadow:0 30px 100px rgba(13,38,27,.24);pa
 .branch-progress{border-radius:99px;background:var(--pale);color:var(--green);padding:1px 7px}
 .daily-tag{border-radius:99px;background:#edf0fb;color:#53649a;padding:1px 8px;font-weight:650}
 .carry-tag{border-radius:99px;background:#f5ece2;color:#8f6842;padding:1px 7px}
+.planned-tag{border-radius:99px;background:#eef1f7;color:#596477;padding:1px 7px}
 .task-resource{color:var(--green);font-weight:600;text-decoration:underline;text-underline-offset:3px}.task-resource:hover{color:var(--ink)}
 .deadline-tag{border-radius:99px;background:var(--pale);color:var(--green);padding:1px 7px}
 .deadline-tag.today{background:#f5ece2;color:#8f6842}
