@@ -108,8 +108,11 @@ function taskRow(t) {
 function todayPage() {
   const roots=state.tasks.filter(t=>!t.parent_task_id);
   const dateTasks = roots.filter(t=>t.planned_date===selectedDay);
-  const carried = roots.filter(t=>!t.recurrence_key && !t.completed_at && t.planned_date && t.planned_date<selectedDay);
-  const otherOpen = roots.filter(t=>!t.completed_at&&!isDailyTask(t)&&(!t.planned_date||t.planned_date>selectedDay));
+  // Ordinary unfinished tasks stay visible on every day until they are completed.
+  // The planned date only decides their section; the DDL never controls visibility.
+  const persistentOpen = roots.filter(t=>!t.completed_at&&!isDailyTask(t));
+  const carried = persistentOpen.filter(t=>t.planned_date && t.planned_date<selectedDay);
+  const otherOpen = persistentOpen.filter(t=>!t.planned_date||t.planned_date>selectedDay);
   const byDeadline=(a,b)=>(a.deadline_date||'9999-12-31').localeCompare(b.deadline_date||'9999-12-31')||(a.planned_date||'9999-12-31').localeCompare(b.planned_date||'9999-12-31');
   const col = (name,key) => {
     const list = dateTasks.filter(t=>t.category===key);
@@ -119,10 +122,10 @@ function todayPage() {
     const done = list.filter(t=>t.completed_at);
     const openCount=[...open,...old,...other].flatMap(t=>[t,...descendantTasks(t.id)]).filter(t=>!t.completed_at).length;
     const emptyText=key==='work'?'例如添加「完成一个需求」，再拆成需求澄清、方案设计、开发联调、测试上线。':key==='learning'?'例如读几页书、练一道题，或记下一个新知识点。':'这一栏暂时没有待办。<br>给自己留一点空间。';
-    return `<section class="task-column"><div class="column-head"><h2>${name}</h2><span class="count">${openCount} 件待办</span></div>${open.length?`<ul class="task-list">${open.map(taskRow).join('')}</ul>`:''}${old.length?`<div class="section-label">此前未完成 · ${old.length}</div><ul class="task-list">${old.map(taskRow).join('')}</ul>`:''}${other.length?`<div class="section-label">其他日期 · ${other.length}</div><ul class="task-list">${other.map(taskRow).join('')}</ul>`:''}${!open.length&&!old.length&&!other.length?`<div class="empty">${emptyText}</div>`:''}${done.length?`<div class="section-label">已完成 ${done.length}</div><ul class="task-list">${done.map(taskRow).join('')}</ul>`:''}</section>`;
+    return `<section class="task-column"><div class="column-head"><h2>${name}</h2><span class="count">${openCount} 件待办</span></div>${open.length?`<ul class="task-list">${open.map(taskRow).join('')}</ul>`:''}${old.length?`<div class="section-label">此前未完成 · 持续显示 · ${old.length}</div><ul class="task-list">${old.map(taskRow).join('')}</ul>`:''}${other.length?`<div class="section-label">其他计划日 · 提前显示 · ${other.length}</div><ul class="task-list">${other.map(taskRow).join('')}</ul>`:''}${!open.length&&!old.length&&!other.length?`<div class="empty">${emptyText}</div>`:''}${done.length?`<div class="section-label">已完成 ${done.length}</div><ul class="task-list">${done.map(taskRow).join('')}</ul>`:''}</section>`;
   };
   return `${head('TODAY',selectedDay===state.today?'先把今天过好':dateLabel(selectedDay),'工作、生活与个人学习，都可以一步一步来。',`<div class="date-toolbar"><button class="icon-button" data-action="day-prev" aria-label="前一天">‹</button><input class="input" id="day-input" type="date" value="${selectedDay}" aria-label="选择日期"><button class="icon-button" data-action="day-next" aria-label="后一天">›</button></div>`)}
-    <form class="quick-add" id="quick-add"><input name="title" placeholder="写下一件要做的事…" aria-label="新待办" required maxlength="240"><select class="input" name="category" aria-label="待办分类"><option value="work">工作</option><option value="life">生活</option><option value="learning">个人学习</option></select><label class="quick-deadline"><span>DDL</span><input class="input" id="quick-deadline" name="deadline_date" type="date" value="${selectedDay}" aria-label="截止日期，可留空"><button type="button" data-action="clear-quick-deadline" aria-label="不设截止日期" title="不设截止日期">×</button></label><button class="primary" type="submit">添加待办</button></form><p class="branch-help">复杂任务可以点「＋ 分支」逐层拆解；每一步都能单独勾选。勾选主任务会完成整棵分支。</p>
+    <form class="quick-add" id="quick-add"><input name="title" placeholder="写下一件要做的事…" aria-label="新待办" required maxlength="240"><select class="input" name="category" aria-label="待办分类"><option value="work">工作</option><option value="life">生活</option><option value="learning">个人学习</option></select><label class="quick-deadline"><span>DDL</span><input class="input" id="quick-deadline" name="deadline_date" type="date" value="${selectedDay}" aria-label="截止日期，可留空"><button type="button" data-action="clear-quick-deadline" aria-label="不设截止日期" title="不设截止日期">×</button></label><button class="primary" type="submit">添加待办</button></form><p class="branch-help">工作、生活、个人学习的未完成事项都会持续显示，不受 DDL 日期限制；复杂任务可用「＋ 分支」逐层拆解。</p>
     <div class="today-columns">${col('工作','work')}${col('生活','life')}${col('个人学习','learning')}</div>`;
 }
 
