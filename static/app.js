@@ -10,6 +10,10 @@ const collapsedTasks = new Set();
 let journalTimer;
 let journalQuery = '';
 let toastTimer;
+let galleryOpen = false;
+let galleryRange = 0;
+let galleryCategory = 'all';
+let galleryIndex = 0;
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const dateLabel = d => d ? new Date(`${d}T12:00:00`).toLocaleDateString('zh-CN', {year:'numeric',month:'long',day:'numeric',weekday:'long'}) : '';
@@ -60,6 +64,7 @@ async function go(path) {
 }
 function render() {
   const r = route();
+  if(r !== "/dashboard") galleryOpen = false;
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active',a.getAttribute('href')===r));
   app.innerHTML = r === '/' ? home() : r === '/today' ? todayPage() : r === '/plans' ? plansPage() : r === '/insights' ? insightsPage() : dashboardPage();
   document.title = `${r==='/'?'首页':{'/today':'今日','/plans':'规划','/insights':'每日记录','/dashboard':'回顾'}[r]} · 小汪的日常`;
@@ -75,9 +80,16 @@ function home() {
     <section class="home-grid" aria-label="四个功能入口">
       <a class="home-card" href="/today" data-link><span class="num">01 / 今天</span><span class="arrow">↗</span><h2>今天，先做哪件事？</h2><p>${todays.length ? `还有 ${todays.filter(t=>t.category==='work').length} 件工作、${todays.filter(t=>t.category==='life').length} 件生活、${todays.filter(t=>t.category==='learning').length} 件个人学习待办` : '从写下第一件事开始'}</p></a>
       <a class="home-card" href="/plans" data-link><span class="num">02 / 规划</span><span class="arrow">↗</span><h2>未来几年，想抵达哪里？</h2><p>${next ? `下一个里程碑：${esc(next.title)} · ${shortDate(next.target_date)}` : '给想去的地方写下一个明确的方向'}</p></a>
-      <a class="home-card" href="/insights" data-link><span class="num">03 / 记录</span><span class="arrow">↗</span><h2>今天，有什么值得记下？</h2><p>${journal?.success_body ? `成功日记：${esc(journal.success_body.slice(0,32))}` : journal?.body ? esc(journal.body.slice(0,42)) : '记下一件做成的事，或一点新的心得'}</p></a>
+      <a class="home-card" href="/insights" data-link><span class="num">03 / 记录</span><span class="arrow">↗</span><h2>今天，有什么值得记下？</h2><p>${journal ? journalHomeSummary(journal) : '记下一件做成的事，或一点新的心得'}</p></a>
       <a class="home-card" href="/dashboard" data-link><span class="num">04 / 回顾</span><span class="arrow">↗</span><h2>回头看看，走了多远？</h2><p>最近 7 天完成了 ${recentDone} 件事</p></a>
     </section>`;
+}
+
+function journalHomeSummary(entry) {
+  const parts=[];
+  if(entry.success_body?.trim()) parts.push('成功日记已写下');
+  if((entry.body||entry.title).trim()) parts.push('心得已留存');
+  return parts.length ? `${parts.join('，')}。去看看今天这一页` : '记下一件做成的事，或一点新的心得';
 }
 
 function childTasks(id) {
@@ -108,6 +120,9 @@ function taskRow(t) {
 function todayPage() {
   const roots=state.tasks.filter(t=>!t.parent_task_id);
   const dateTasks = roots.filter(t=>t.planned_date===selectedDay);
+  // Completed tasks belong to the day they were actually completed, even when
+  // their original planned date was earlier.
+  const completedToday = roots.filter(t=>t.completed_at&&localStampDay(t.completed_at)===selectedDay);
   // Ordinary unfinished tasks stay visible on every day until they are completed.
   // The planned date only decides their section; the DDL never controls visibility.
   const persistentOpen = roots.filter(t=>!t.completed_at&&!isDailyTask(t));
@@ -119,7 +134,7 @@ function todayPage() {
     const open = list.filter(t=>!t.completed_at);
     const old = carried.filter(t=>t.category===key).sort((a,b)=>b.planned_date.localeCompare(a.planned_date));
     const other = otherOpen.filter(t=>t.category===key).sort(byDeadline);
-    const done = list.filter(t=>t.completed_at);
+    const done = completedToday.filter(t=>t.category===key);
     const openCount=[...open,...old,...other].flatMap(t=>[t,...descendantTasks(t.id)]).filter(t=>!t.completed_at).length;
     const emptyText=key==='work'?'例如添加「完成一个需求」，再拆成需求澄清、方案设计、开发联调、测试上线。':key==='learning'?'例如读几页书、练一道题，或记下一个新知识点。':'这一栏暂时没有待办。<br>给自己留一点空间。';
     return `<section class="task-column"><div class="column-head"><h2>${name}</h2><span class="count">${openCount} 件待办</span></div>${open.length?`<ul class="task-list">${open.map(taskRow).join('')}</ul>`:''}${old.length?`<div class="section-label">此前未完成 · 持续显示 · ${old.length}</div><ul class="task-list">${old.map(taskRow).join('')}</ul>`:''}${other.length?`<div class="section-label">其他计划日 · 提前显示 · ${other.length}</div><ul class="task-list">${other.map(taskRow).join('')}</ul>`:''}${!open.length&&!old.length&&!other.length?`<div class="empty">${emptyText}</div>`:''}${done.length?`<div class="section-label">已完成 ${done.length}</div><ul class="task-list">${done.map(taskRow).join('')}</ul>`:''}</section>`;
@@ -171,8 +186,22 @@ function planDetail(p) {
 function historyItems() {
   const filtered=state.insights.filter(i=>[i.title,i.body,i.success_body,i.tags].join(' ').toLowerCase().includes(journalQuery.toLowerCase()));
   let month='';
-  return filtered.map(i=>{const m=i.entry_date.slice(0,7), label=m!==month?`<div class="history-month">${m.replace('-',' 年 ')} 月</div>`:'';month=m;const parts=[i.success_body?'成功日记':'',i.body||i.title?'心得':''].filter(Boolean).join(' · ');return `${label}<button class="history-item ${selectedInsight===i.entry_date?'active':''}" data-action="select-insight" data-date="${i.entry_date}"><time>${dateLabel(i.entry_date)}</time><strong>${esc(i.title||i.success_body?.slice(0,18)||i.body.slice(0,18)||'一则记录')}</strong><span>${esc(parts)}${parts?' · ':''}${esc((i.success_body||i.body||i.tags||'').slice(0,46))}</span></button>`;}).join('')||`<div class="empty">${journalQuery?'没有找到相关记录。':'还没有历史记录。'}</div>`;
+  return filtered.map(i=>{
+    const m=i.entry_date.slice(0,7), label=m!==month?`<div class="history-month">${m.replace('-',' 年 ')} 月</div>`:'';
+    month=m;
+    const hasSuccess=Boolean(i.success_body.trim()), hasInsight=Boolean((i.body||i.title).trim());
+    const successPreview=recordPreview(i.success_body, 2);
+    const insightPreview=recordPreview(i.body, 2);
+    return `${label}<button class="history-item ${selectedInsight===i.entry_date?'active':''}" data-action="select-insight" data-date="${i.entry_date}" aria-label="查看 ${dateLabel(i.entry_date)} 的记录"><div class="history-item-top"><strong>${dateLabel(i.entry_date)}</strong><span class="history-kinds">${hasSuccess?'<i class="history-kind success">成</i>':''}${hasInsight?'<i class="history-kind insight">思</i>':''}</span></div>${hasSuccess?`<span class="history-preview success-preview"><b>做成</b>${esc(successPreview)}</span>`:''}${hasInsight?`<span class="history-preview insight-preview"><b>心得</b>${esc(insightPreview)}</span>`:''}${i.tags?`<span class="history-tags">${esc(i.tags)}</span>`:''}</button>`;
+  }).join('')||`<div class="empty">${journalQuery?'没有找到相关记录。':'还没有历史记录。'}</div>`;
 }
+
+function recordPreview(text, lines=2) {
+  const rows=(text||'').trim().split(/\n+/).map(row=>row.replace(/\s+/g,' ').trim()).filter(Boolean);
+  const pieces=rows.length>1 ? rows : (rows[0]?.match(/[^。！？.!?]+[。！？.!?]?/g)||[]).map(piece=>piece.trim());
+  return pieces.slice(0,lines).join(' · ');
+}
+
 function insightsPage() {
   const entry=state.insights.find(x=>x.entry_date===selectedInsight)||{};
   const selected=new Date(`${selectedInsight}T12:00:00`);
@@ -184,6 +213,46 @@ function insightsPage() {
       <div class="journal-section insight-section"><div class="journal-section-head"><span class="journal-section-number">02</span><div><h2>心得</h2><p>有什么新的想法、感受或收获？</p></div></div><label class="sr-only" for="journal-body">心得</label><textarea class="journal-body" id="journal-body" placeholder="把你的想法写在这里。" aria-label="心得正文">${esc(entry.body||'')}</textarea><details class="journal-extra" ${entry.title||entry.tags?'open':''}><summary>添加标题和标签 <span>可选</span></summary><div class="journal-extra-fields"><input class="input" id="journal-title" placeholder="给这一天起个标题" value="${esc(entry.title||'')}" maxlength="240" aria-label="心得标题"><input class="input" id="journal-tags" placeholder="标签，用逗号分隔" value="${esc(entry.tags||'')}" maxlength="400" aria-label="心得标签"></div></details></div>${entry.id?`<button class="text-button danger journal-delete" data-action="delete-insights" data-id="${entry.id}">删除这一天的全部记录</button>`:''}</section>
     <aside class="journal-history"><div class="journal-history-head"><h2>翻翻往日</h2><p>最近一周</p></div><div class="journal-week">${week.map(day=>`<button class="journal-week-day ${day===selectedInsight?'active':''}" data-action="select-insight" data-date="${day}" aria-label="查看 ${dateLabel(day)} 的记录"><span>${new Date(`${day}T12:00:00`).toLocaleDateString('zh-CN',{weekday:'short'})}</span><strong>${Number(day.slice(8))}</strong><i class="${state.insights.some(x=>x.entry_date===day)?'recorded':''}" aria-hidden="true"></i></button>`).join('')}</div><input class="search-input" id="journal-search" placeholder="搜索以往的记录" value="${esc(journalQuery)}" aria-label="搜索记录"><div id="history-list">${historyItems()}</div></aside></div>`;
 }
+function galleryTasks() {
+  const start = galleryRange ? dayShift(state.today, -galleryRange + 1) : '';
+  return state.tasks.filter(t => t.completed_at && !t.deleted_at && (galleryCategory === 'all' || t.category === galleryCategory) &&
+    localStampDay(t.completed_at) <= state.today && (!start || localStampDay(t.completed_at) >= start))
+    .sort((a,b) => b.completed_at.localeCompare(a.completed_at) || b.id-a.id);
+}
+const galleryRoomSize = 12;
+function galleryCard(items) {
+  if(!items.length) return '<p class="gallery-empty">当前筛选下还没有完成记录。</p>';
+  const pages = Math.ceil(items.length/galleryRoomSize);
+  galleryIndex = ((galleryIndex % pages) + pages) % pages;
+  const offset = galleryIndex * galleryRoomSize;
+  return `<div class="completed-list">${items.slice(offset,offset+galleryRoomSize).map(t=>{
+    const category={work:'工作',life:'生活',learning:'个人学习'}[t.category]||'日常';
+    return `<button class="completed-item" data-action="gallery-inspect" data-id="${t.id}" aria-label="查看已完成事项：${esc(t.title)}"><span class="completed-check" aria-hidden="true">✓</span><span class="completed-item-text"><strong>${esc(t.title)}</strong><small>${esc(category)} · ${esc(shortDate(localStampDay(t.completed_at)))}完成</small></span></button>`;
+  }).join('')}</div>`;
+}
+function completionGallery() {
+  const items=galleryTasks(),total=state.tasks.filter(t=>t.completed_at&&!t.deleted_at).length;
+  return `<details class="completion-gallery" id="completion-gallery" ${galleryOpen?'open':''}><summary><span class="gallery-summary-text"><strong>已完成的待办</strong><small>共 ${total} 件 · 展开回看</small></span><span class="gallery-chevron" aria-hidden="true">⌄</span></summary><div class="gallery-body"><div class="gallery-filter-row"><span>时间</span><div class="gallery-filters" role="group" aria-label="完成记录时间范围">${[0,7,30,90].map(n=>`<button class="secondary tiny ${galleryRange===n?'active':''}" data-action="gallery-range" data-range="${n}" aria-pressed="${galleryRange===n}">${n?n+' 天':'全部'}</button>`).join('')}</div></div><div class="gallery-filter-row"><span>分类</span><div class="gallery-filters" role="group" aria-label="完成记录分类">${[['all','全部'],['work','工作'],['life','生活'],['learning','个人学习']].map(([key,label])=>`<button class="secondary tiny ${galleryCategory===key?'active':''}" data-action="gallery-category" data-category="${key}" aria-pressed="${galleryCategory===key}">${label}</button>`).join('')}</div></div><div id="gallery-stage" aria-live="polite">${galleryCard(items)}</div><div class="gallery-controls"><span id="gallery-count">${items.length} 件完成记录${items.length?' · 第 '+(galleryIndex+1)+' / '+Math.ceil(items.length/galleryRoomSize)+' 页':''}</span><div><button class="secondary tiny" data-action="gallery-prev" ${items.length<=galleryRoomSize?'disabled':''}>上一页</button><button class="secondary tiny" data-action="gallery-next" ${items.length<=galleryRoomSize?'disabled':''}>下一页</button></div></div></div></details>`;
+}
+function advanceGallery(step) {
+  const stage=document.querySelector('#gallery-stage');
+  if(!stage) return;
+  const items=galleryTasks();
+  galleryIndex+=step;
+  stage.innerHTML=galleryCard(items);
+  document.querySelector('#gallery-count').textContent=`${items.length} 件完成记录${items.length?' · 第 '+(galleryIndex+1)+' / '+Math.ceil(items.length/galleryRoomSize)+' 页':''}`;
+}
+function inspectGalleryTask(id) {
+  const t = byId(state.tasks,id);
+  if(!t?.completed_at) return;
+  const plan=byId(state.plans,t.plan_id), parent=byId(state.tasks,t.parent_task_id);
+  dialog.innerHTML=`<div class="dialog-inner completed-detail"><div class="dialog-head"><span class="eyebrow">已完成</span><button class="dialog-close" type="button" data-action="close-dialog" aria-label="关闭">×</button></div><h2 id="dialog-title">${esc(t.title)}</h2><p>${esc(dateLabel(localStampDay(t.completed_at)))} · 完成</p>${plan?`<p>所属规划：${esc(plan.title)}</p>`:''}${parent?`<p>分支步骤：${esc(parent.title)}</p>`:''}<div class="completed-detail-note">${esc(t.note || '这条待办已完成。')}</div></div>`;
+  dialog.showModal();
+  dialog.querySelector('[data-action="close-dialog"]').onclick=()=>dialog.close();
+}
+document.addEventListener('toggle', e => {
+  if(e.target.id === 'completion-gallery') galleryOpen = e.target.open;
+}, true);
 function dashboardPage() {
   const start=dayShift(state.today,-dashboardRange+1);
   const completed=state.tasks.filter(t=>t.completed_at && localStampDay(t.completed_at)>=start);
@@ -204,6 +273,7 @@ function dashboardPage() {
     <section class="daily-summary" aria-label="每日任务完成次数"><div class="daily-summary-heading"><div><span class="eyebrow">每日任务</span><h2>坚持，正在留下记录</h2><p>最近 ${dashboardRange} 天完成 ${dailyInRange.length} 次 · 累计 ${dailyDone.length} 次</p></div><span class="daily-summary-icon" aria-hidden="true">✓</span></div><div class="daily-summary-stats"><div><span>扇贝单词</span><strong>${habitCount('english_vocab',dailyInRange)} 次</strong><small>累计 ${habitCount('english_vocab',dailyDone)} 次</small></div><div><span>扇贝听力</span><strong>${habitCount('english_listening',dailyInRange)} 次</strong><small>累计 ${habitCount('english_listening',dailyDone)} 次</small></div></div></section>
     <div class="dashboard-grid"><section class="chart-panel"><h2>每天完成的待办</h2><div class="bars" aria-label="每日完成待办柱形图">${points.map((n,i)=>`<div class="bar" style="height:${n?Math.max(5,Math.round(n/max*100)):1}%" data-tip="${shortDate(dayShift(start,i))} · ${n} 件" title="${shortDate(dayShift(start,i))}：${n} 件"></div>`).join('')}</div><div class="axis"><span>${shortDate(start)}</span><span>${shortDate(state.today)}</span></div></section>
     <section class="chart-panel"><h2>完成待办分类</h2><div class="split-row"><span>工作</span><strong>${work} 件</strong></div><div class="hbar"><div style="width:${completed.length?work/completed.length*100:0}%"></div></div><div class="split-row"><span>生活</span><strong>${life} 件</strong></div><div class="hbar life"><div style="width:${completed.length?life/completed.length*100:0}%"></div></div><div class="split-row"><span>个人学习</span><strong>${learning} 件</strong></div><div class="hbar learning"><div style="width:${completed.length?learning/completed.length*100:0}%"></div></div><p class="muted small" style="line-height:1.7;margin-top:27px">这里展示各类任务的完成数量。</p></section></div>
+    ${completionGallery()}
     <div class="dashboard-grid dashboard-lower"><section class="chart-panel"><h2>接下来的里程碑</h2>${upcoming.length?upcoming.map(m=>`<div class="recent-row"><span>${esc(m.title)} <span class="muted">· ${esc(byId(state.plans,m.plan_id)?.title||'')}</span></span><span>${shortDate(m.target_date)}</span></div>`).join(''):'<p class="muted small">还没有即将到来的里程碑。</p>'}</section><section class="chart-panel"><h2>最近达成</h2>${recent.length?recent.map(m=>`<div class="recent-row"><span>${esc(m.title)}</span><span>${shortDate(m.completed_at.slice(0,10))}</span></div>`).join(''):'<p class="muted small">完成一个里程碑后，会在这里留下记录。</p>'}</section></div>`;
 }
 
@@ -281,6 +351,10 @@ document.addEventListener('click',async e=>{
   if(a==='new-plan')planEditor();
   if(a==='edit-plan')planEditor(id);
   if(a==='select-plan'){selectedPlan=id;render();}
+  if(a==='gallery-inspect')inspectGalleryTask(id);
+  if(a==='gallery-category'){galleryCategory=btn.dataset.category;galleryIndex=0;render();}
+  if(a==='gallery-range'){galleryRange=Number(btn.dataset.range);galleryIndex=0;render();}
+  if(a==='gallery-prev'||a==='gallery-next'){advanceGallery(a==='gallery-prev'?-1:1);}
   if(a==='range'){dashboardRange=Number(btn.dataset.range);render();}
   if(a==='select-insight')await switchInsightDate(btn.dataset.date);
   if(a==='insight-prev')await switchInsightDate(dayShift(selectedInsight,-1));
