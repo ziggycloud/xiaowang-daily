@@ -22,7 +22,7 @@ LOCK = threading.RLock()
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
  id INTEGER PRIMARY KEY, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'work',
- planned_date TEXT, deadline_date TEXT, due_time TEXT, priority INTEGER NOT NULL DEFAULT 0,
+ planned_date TEXT, deadline_date TEXT, due_time TEXT, priority INTEGER NOT NULL DEFAULT 1,
  note TEXT NOT NULL DEFAULT '', plan_id INTEGER, milestone_id INTEGER, parent_task_id INTEGER,
  completed_at TEXT, deleted_at TEXT,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -87,6 +87,11 @@ def db():
 def init_db():
     with LOCK, db() as con:
         con.executescript(SCHEMA)
+        con.execute("CREATE TABLE IF NOT EXISTS app_migrations (key TEXT PRIMARY KEY)")
+        if not con.execute("SELECT 1 FROM app_migrations WHERE key='priority_levels_v2'").fetchone():
+            # Old normal=0 becomes medium=1; both elevated levels become high=2.
+            con.execute("UPDATE tasks SET priority=CASE WHEN priority=0 THEN 1 ELSE 2 END")
+            con.execute("INSERT INTO app_migrations(key) VALUES('priority_levels_v2')")
         columns = {row["name"] for row in con.execute("PRAGMA table_info(tasks)")}
         if "parent_task_id" not in columns:
             con.execute("ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER")
@@ -150,6 +155,45 @@ def sync_milestone_completion(con, milestone_id, stamp):
         con.execute("UPDATE milestones SET completed_at=? WHERE id=?", (completed_at, milestone_id))
 
 
+def attach_existing_tasks(con, target_id, selected_ids, stamp):
+    if not isinstance(selected_ids, list) or len(selected_ids) > 1000:
+        raise ValueError("请选择要移入的待办")
+    if any(type(task_id) is not int or task_id < 1 for task_id in selected_ids):
+        raise ValueError("待办编号不正确")
+    if not selected_ids:
+        return
+    target = existing(con, "tasks", target_id)
+    if target.get("recurrence_key"):
+        raise ValueError("每日重复任务不能接收已有待办")
+    forbidden = {target_id, *task_ancestor_ids(con, target_id)}
+    selected = set(selected_ids)
+    if selected & forbidden:
+        raise ValueError("不能移入当前待办或它的上级，避免分支循环")
+    sources = [existing(con, "tasks", task_id) for task_id in sorted(selected)]
+    for source in sources:
+        if source["completed_at"] or source.get("recurrence_key"):
+            raise ValueError("只能移入未完成的普通待办")
+    # When both a parent and its child are selected, move the whole branch once.
+    roots = [source for source in sources
+             if not selected.intersection(task_ancestor_ids(con, source["id"]))]
+    milestones = {target.get("milestone_id")}
+    for source in roots:
+        branch = task_branch_ids(con, source["id"])
+        marks = ",".join("?" for _ in branch)
+        milestones.update(row[0] for row in con.execute(
+            f"SELECT DISTINCT milestone_id FROM tasks WHERE id IN ({marks})", branch))
+        con.execute("UPDATE tasks SET parent_task_id=?,updated_at=? WHERE id=?",
+                    (target_id, stamp, source["id"]))
+        update_task_ids(con, branch,
+                        "category=?,planned_date=?,plan_id=?,milestone_id=?,updated_at=?",
+                        (target["category"], target["planned_date"], target["plan_id"],
+                         target.get("milestone_id"), stamp))
+    update_task_ids(con, [target_id, *task_ancestor_ids(con, target_id)],
+                    "completed_at=NULL,updated_at=?", (stamp,))
+    for milestone_id in milestones:
+        sync_milestone_completion(con, milestone_id, stamp)
+
+
 def rows(con, query, args=()):
     return [dict(x) for x in con.execute(query, args).fetchall()]
 
@@ -170,8 +214,8 @@ def ensure_daily_english(con, day):
     )
     for key, title, note in daily_tasks:
         # The unique date + recurrence key also respects a day the user deleted.
-        con.execute("""INSERT OR IGNORE INTO tasks(title,category,planned_date,note,plan_id,recurrence_key,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?)""", (title, "learning", day, note, plan_id, key, stamp, stamp))
+        con.execute("""INSERT OR IGNORE INTO tasks(title,category,planned_date,note,plan_id,recurrence_key,created_at,updated_at,priority)
+            VALUES(?,?,?,?,?,?,?,?,1)""", (title, "learning", day, note, plan_id, key, stamp, stamp))
 
 
 def clean_text(v, max_len=10000):
@@ -289,7 +333,7 @@ def mutate(collection, method, item_id, payload):
                     raise ValueError("里程碑与规划不匹配")
                 plan_id = milestone["plan_id"]
             values = (title, category, date_value(d.get("planned_date")), date_value(d.get("deadline_date", today())), time_value(d.get("due_time")),
-                      integer(d.get("priority"), 0, 2, 0), clean_text(d.get("note")), plan_id, milestone_id,
+                      integer(d.get("priority"), 0, 2, 1), clean_text(d.get("note")), plan_id, milestone_id,
                       stamp if d.get("completed") is True else (None if d.get("completed") is False else d.get("completed_at")), stamp)
             if item_id:
                 con.execute("""UPDATE tasks SET title=?,category=?,planned_date=?,deadline_date=?,due_time=?,priority=?,note=?,plan_id=?,milestone_id=?,completed_at=?,updated_at=? WHERE id=?""", values + (item_id,))
@@ -310,6 +354,8 @@ def mutate(collection, method, item_id, payload):
             sync_milestone_completion(con, old_milestone_id, stamp)
             if milestone_id != old_milestone_id:
                 sync_milestone_completion(con, milestone_id, stamp)
+            if "attach_task_ids" in payload:
+                attach_existing_tasks(con, item_id, payload["attach_task_ids"], stamp)
         elif collection == "plans":
             old = existing(con, collection, item_id) if item_id else {}
             d = {**old, **payload}
@@ -422,7 +468,7 @@ class Handler(BaseHTTPRequestHandler):
                 requested = parse_qs(query_day).get("day", [None])[0]
                 return self.send_json(bootstrap(date_value(requested)))
             if method == "GET" and path == "/api/health":
-                return self.send_json({"ok": True})
+                return self.send_json({"ok": True, "features": {"attach_existing_tasks": True, "task_priority_v2": True}})
             if method == "GET" and path == "/api/backup":
                 with LOCK, db() as source:
                     temp = DATA / "backup.tmp.sqlite3"

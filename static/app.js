@@ -92,8 +92,12 @@ function journalHomeSummary(entry) {
   return parts.length ? `${parts.join('，')}。去看看今天这一页` : '记下一件做成的事，或一点新的心得';
 }
 
+function taskOrder(a,b) {
+  return (a.deadline_date||'9999-12-31').localeCompare(b.deadline_date||'9999-12-31') ||
+    (Number(b.priority ?? 1)-Number(a.priority ?? 1)) || a.id-b.id;
+}
 function childTasks(id) {
-  return state.tasks.filter(t=>t.parent_task_id===id).sort((a,b)=>a.id-b.id);
+  return state.tasks.filter(t=>t.parent_task_id===id).sort(taskOrder);
 }
 function descendantTasks(id) {
   const found=[];
@@ -105,7 +109,7 @@ function deadlineBadge(t) {
   if(!t.deadline_date)return '';
   const expired=!t.completed_at && t.deadline_date<state.today;
   const today=!t.completed_at && t.deadline_date===state.today;
-  return `<span class="deadline-tag ${expired?'expired':today?'today':''}">${expired?'DDL 已逾期 · ':today?'今日 DDL · ':'DDL · '}${shortDate(t.deadline_date)}</span>`;
+  return `<span class="deadline-tag ${expired?'expired':today?'today':''}">${expired?'逾期 · ':today?'今天截止 · ':'截止 · '}${shortDate(t.deadline_date)}</span>`;
 }
 function taskRow(t) {
   const plan = t.plan_id ? byId(state.plans,t.plan_id) : null;
@@ -113,9 +117,7 @@ function taskRow(t) {
   const complete=descendants.filter(x=>x.completed_at).length;
   const collapsed=collapsedTasks.has(t.id);
   const resource=t.recurrence_key==='english_vocab'?['https://web.shanbay.com/web/main','打开扇贝']:t.recurrence_key==='english_listening'?['https://www.shanbay.com/listen/books/all/','扇贝听力']:null;
-  const plannedTag=!isDailyTask(t)&&!t.completed_at&&!t.parent_task_id&&t.planned_date!==selectedDay
-    ?`<span class="${t.planned_date&&t.planned_date<selectedDay?'carry-tag':'planned-tag'}">${t.planned_date?(t.planned_date<selectedDay?'原定 ':'计划 ')+shortDate(t.planned_date):'未安排日期'}</span>`:'';
-  return `<li class="task-node"><div class="task-row ${t.completed_at?'done':''}">${children.length?`<button class="branch-toggle" type="button" data-action="toggle-branch-open" data-id="${t.id}" aria-expanded="${!collapsed}" aria-label="${collapsed?'展开':'收起'} ${esc(t.title)} 的分支">${collapsed?'▸':'▾'}</button>`:'<span class="branch-spacer" aria-hidden="true"></span>'}<input class="check" type="checkbox" data-action="toggle-tasks" data-id="${t.id}" ${t.completed_at?'checked':''} aria-label="${t.completed_at?'取消完成':'完成'} ${esc(t.title)}"><div class="task-main"><div class="task-title">${esc(t.title)}</div><div class="task-meta">${t.due_time?`<span>${esc(t.due_time)}</span>`:''}${deadlineBadge(t)}${t.priority?`<span class="priority">${t.priority===2?'重要':'优先'}</span>`:''}${plan&&!t.parent_task_id?`<span>关联：${esc(plan.title)}</span>`:''}${isDailyTask(t)?'<span class="daily-tag">每日任务</span>':''}${descendants.length?`<span class="branch-progress">分支 ${complete}/${descendants.length}</span>`:''}${resource?`<a class="task-resource" href="${resource[0]}" target="_blank" rel="noopener noreferrer">${resource[1]} ↗</a>`:''}${plannedTag}</div></div><div class="row-actions"><button type="button" data-action="new-branch" data-id="${t.id}" aria-label="为 ${esc(t.title)} 添加分支">＋ 分支</button><button type="button" data-action="edit-task" data-id="${t.id}" aria-label="编辑 ${esc(t.title)}">编辑</button></div></div>${children.length&&!collapsed?`<ul class="task-branches">${children.map(taskRow).join('')}</ul>`:''}</li>`;
+  return `<li class="task-node"><div class="task-row ${t.completed_at?'done':''}">${children.length?`<button class="branch-toggle" type="button" data-action="toggle-branch-open" data-id="${t.id}" aria-expanded="${!collapsed}" aria-label="${collapsed?'展开':'收起'} ${esc(t.title)} 的分支">${collapsed?'▸':'▾'}</button>`:'<span class="branch-spacer" aria-hidden="true"></span>'}<input class="check" type="checkbox" data-action="toggle-tasks" data-id="${t.id}" ${t.completed_at?'checked':''} aria-label="${t.completed_at?'取消完成':'完成'} ${esc(t.title)}"><div class="task-main"><div class="task-title">${esc(t.title)}</div><div class="task-meta">${t.due_time?`<span>${esc(t.due_time)}</span>`:''}${deadlineBadge(t)}<span class="priority ${(t.priority??1)===2?'priority-high':''}">${{0:'低',1:'中',2:'高'}[t.priority ?? 1]}优先级</span>${plan&&!t.parent_task_id?`<span class="task-plan" title="${esc(plan.title)}">${esc(plan.title)}</span>`:''}${isDailyTask(t)?'<span class="daily-tag">每日任务</span>':''}${descendants.length?`<span class="branch-progress">分支 ${complete}/${descendants.length}</span>`:''}${resource?`<a class="task-resource" href="${resource[0]}" target="_blank" rel="noopener noreferrer">${resource[1]} ↗</a>`:''}</div></div><div class="row-actions"><button type="button" data-action="new-branch" data-id="${t.id}" aria-label="为 ${esc(t.title)} 添加分支">＋ 分支</button><button type="button" data-action="edit-task" data-id="${t.id}" aria-label="编辑 ${esc(t.title)}">编辑</button></div></div>${children.length&&!collapsed?`<ul class="task-branches">${children.map(taskRow).join('')}</ul>`:''}</li>`;
 }
 function todayPage() {
   const roots=state.tasks.filter(t=>!t.parent_task_id);
@@ -128,20 +130,22 @@ function todayPage() {
   const persistentOpen = roots.filter(t=>!t.completed_at&&!isDailyTask(t));
   const carried = persistentOpen.filter(t=>t.planned_date && t.planned_date<selectedDay);
   const otherOpen = persistentOpen.filter(t=>!t.planned_date||t.planned_date>selectedDay);
-  const byDeadline=(a,b)=>(a.deadline_date||'9999-12-31').localeCompare(b.deadline_date||'9999-12-31')||(a.planned_date||'9999-12-31').localeCompare(b.planned_date||'9999-12-31');
+  const visibleOpenRoots=[...dateTasks.filter(t=>!t.completed_at),...carried,...otherOpen];
+  const pendingIds=new Set(visibleOpenRoots.flatMap(t=>[t,...descendantTasks(t.id)]).filter(t=>!t.completed_at).map(t=>t.id));
+  const doneCount=state.tasks.filter(t=>t.completed_at&&localStampDay(t.completed_at)===selectedDay).length;
+  const pendingCount=pendingIds.size,totalCount=pendingCount+doneCount;
+  const summary=`<section class="today-summary" aria-label="当日待办统计"><div><span>待办总数</span><strong data-stat="total">${totalCount}</strong></div><div><span>未完成</span><strong data-stat="pending">${pendingCount}</strong></div><div><span>${selectedDay===state.today?'今日':'当日'}完成</span><strong data-stat="done">${doneCount}</strong></div><div><span>完成率</span><strong data-stat="rate">${totalCount?Math.round(doneCount/totalCount*100):0}%</strong></div><p>含分支步骤 · 未完成按当前列表统计，完成按实际完成日期统计</p></section>`;
   const col = (name,key) => {
-    const list = dateTasks.filter(t=>t.category===key);
-    const open = list.filter(t=>!t.completed_at);
-    const old = carried.filter(t=>t.category===key).sort((a,b)=>b.planned_date.localeCompare(a.planned_date));
-    const other = otherOpen.filter(t=>t.category===key).sort(byDeadline);
-    const done = completedToday.filter(t=>t.category===key);
-    const openCount=[...open,...old,...other].flatMap(t=>[t,...descendantTasks(t.id)]).filter(t=>!t.completed_at).length;
+    const open=visibleOpenRoots.filter(t=>t.category===key).sort(taskOrder);
+    const done=completedToday.filter(t=>t.category===key).sort(taskOrder);
+    const openCount=open.flatMap(t=>[t,...descendantTasks(t.id)]).filter(t=>!t.completed_at).length;
     const emptyText=key==='work'?'例如添加「完成一个需求」，再拆成需求澄清、方案设计、开发联调、测试上线。':key==='learning'?'例如读几页书、练一道题，或记下一个新知识点。':'这一栏暂时没有待办。<br>给自己留一点空间。';
-    return `<section class="task-column"><div class="column-head"><h2>${name}</h2><span class="count">${openCount} 件待办</span></div>${open.length?`<ul class="task-list">${open.map(taskRow).join('')}</ul>`:''}${old.length?`<div class="section-label">此前未完成 · 持续显示 · ${old.length}</div><ul class="task-list">${old.map(taskRow).join('')}</ul>`:''}${other.length?`<div class="section-label">其他计划日 · 提前显示 · ${other.length}</div><ul class="task-list">${other.map(taskRow).join('')}</ul>`:''}${!open.length&&!old.length&&!other.length?`<div class="empty">${emptyText}</div>`:''}${done.length?`<div class="section-label">已完成 ${done.length}</div><ul class="task-list">${done.map(taskRow).join('')}</ul>`:''}</section>`;
+    return `<section class="task-column"><div class="column-head"><h2>${name}</h2><span class="count">${openCount} 件待办</span></div>${open.length?`<ul class="task-list">${open.map(taskRow).join('')}</ul>`:`<div class="empty">${emptyText}</div>`}${done.length?`<div class="section-label">已完成 ${done.length}</div><ul class="task-list">${done.map(taskRow).join('')}</ul>`:''}</section>`;
   };
   return `${head('TODAY',selectedDay===state.today?'先把今天过好':dateLabel(selectedDay),'工作、生活与个人学习，都可以一步一步来。',`<div class="date-toolbar"><button class="icon-button" data-action="day-prev" aria-label="前一天">‹</button><input class="input" id="day-input" type="date" value="${selectedDay}" aria-label="选择日期"><button class="icon-button" data-action="day-next" aria-label="后一天">›</button></div>`)}
-    <form class="quick-add" id="quick-add"><input name="title" placeholder="写下一件要做的事…" aria-label="新待办" required maxlength="240"><select class="input" name="category" aria-label="待办分类"><option value="work">工作</option><option value="life">生活</option><option value="learning">个人学习</option></select><label class="quick-deadline"><span>DDL</span><input class="input" id="quick-deadline" name="deadline_date" type="date" value="${selectedDay}" aria-label="截止日期，可留空"><button type="button" data-action="clear-quick-deadline" aria-label="不设截止日期" title="不设截止日期">×</button></label><button class="primary" type="submit">添加待办</button></form><p class="branch-help">工作、生活、个人学习的未完成事项都会持续显示，不受 DDL 日期限制；复杂任务可用「＋ 分支」逐层拆解。</p>
-    <div class="today-columns">${col('工作','work')}${col('生活','life')}${col('个人学习','learning')}</div>`;
+    ${summary}
+    <form class="quick-add" id="quick-add"><input name="title" placeholder="写下一件要做的事…" aria-label="新待办" required maxlength="240"><select class="input" name="category" aria-label="待办分类"><option value="work">工作</option><option value="life">生活</option><option value="learning">个人学习</option></select><select class="input" name="priority" aria-label="优先级"><option value="1">中优先级</option><option value="2">高优先级</option><option value="0">低优先级</option></select><label class="quick-deadline"><span>DDL</span><input class="input" id="quick-deadline" name="deadline_date" type="date" value="${selectedDay}" aria-label="截止日期，可留空"><button type="button" data-action="clear-quick-deadline" aria-label="不设截止日期" title="不设截止日期">×</button></label><button class="primary" type="submit">添加待办</button></form><p class="branch-help">工作、生活、个人学习的未完成事项都会持续显示，不受 DDL 日期限制；按 DDL 从近到远、同日按优先级从高到低排序；未设 DDL 的放在最后。</p>
+    <div class="today-columns">${col('工作','work')}${col('个人学习','learning')}${col('生活','life')}</div>`;
 }
 
 function planProgress(p) {
@@ -287,6 +291,18 @@ function showDialog(title,fields,onSubmit,deleteAction,deleteMessage='确定删�
   dialog.querySelector('[data-action="close-dialog"]').onclick=()=>dialog.close();
   if(deleteAction) dialog.querySelector('[data-action="dialog-delete"]').onclick=async()=>{if(confirm(deleteMessage)){const ok=await deleteAction();if(ok)dialog.close();}};
 }
+function existingBranchPicker(task,moveOnly=false) {
+  if(!task || isDailyTask(task)) return '';
+  const blocked=new Set([task.id,...descendantTasks(task.id).map(t=>t.id)]);
+  let parent=byId(state.tasks,task.parent_task_id);
+  while(parent && !blocked.has(parent.id)){blocked.add(parent.id);parent=byId(state.tasks,parent.parent_task_id);}
+  const available=state.tasks.filter(t=>!t.completed_at&&!isDailyTask(t)&&!blocked.has(t.id));
+  const groups=[['work','工作'],['life','生活'],['learning','个人学习']].sort((a,b)=>(a[0]===task.category?-1:0)-(b[0]===task.category?-1:0));
+  return `<details class="branch-picker field wide"><summary>移入已有待办 <span>${available.length} 件可选</span></summary><p>${moveOnly?'勾选已有待办后，点击移入或底部保存都会直接移入，无需填写新分支名称。':''}勾选后点击移入，所选待办及其分支会一起移到当前任务下。分类、计划日期和关联规划跟随当前任务，备注与截止日期保留。</p><div class="branch-picker-list">${groups.map(([key,label])=>{
+    const tasks=available.filter(t=>t.category===key);
+    return tasks.length?`<div class="branch-picker-category">${label}</div>${tasks.map(t=>{const owner=byId(state.tasks,t.parent_task_id);return `<label class="branch-picker-item"><input type="checkbox" name="attach_task_ids" value="${t.id}"><span><strong>${esc(t.title)}</strong><small>${owner?'当前分支：'+esc(owner.title):'独立待办'}${childTasks(t.id).length?' · 含子分支':''}</small></span></label>`;}).join('')}`:'';
+  }).join('')||'<div class="muted small">暂无可移入的待办。</div>'}</div>${available.length?`<button type="${moveOnly?'button':'submit'}" class="secondary tiny branch-picker-submit" ${moveOnly?`data-action="attach-existing-branches" data-id="${task.id}"`:''}>${moveOnly?'移入选中待办':'移入选中待办并保存'}</button>`:''}</details>`;
+}
 function taskEditor(id=null,planId=null,parentTaskId=null,milestoneId=null) {
   const t=id?byId(state.tasks,id):null;
   const parent=byId(state.tasks,t?.parent_task_id||parentTaskId);
@@ -295,13 +311,21 @@ function taskEditor(id=null,planId=null,parentTaskId=null,milestoneId=null) {
   const linkedPlan=byId(state.plans,planId);
   const suggestedCategory=t?.category||state.tasks.find(x=>x.plan_id===Number(planId)&&!isDailyTask(x))?.category||(/雅思|考试|学习/.test(linkedPlan?.title||'')?'learning':'work');
   const daily=!!t&&isDailyTask(t);
-  const shared=`${field('任务内容 *','title',t?.title,'text','wide')}${field('截止日期（DDL，可留空）','deadline_date',t?(t.deadline_date||''):selectedDay,'date')}${field('计划时间','due_time',t?.due_time||'','time')}${selectField('优先级','priority',[['0','普通'],['1','优先'],['2','重要']],String(t?.priority||0))}<label class="field wide"><span>备注</span><textarea name="note">${esc(t?.note||'')}</textarea></label>`;
-  const milestoneFields=`<div class="subtle-box field wide">属于里程碑「${esc(milestone?.title||'')}」；完成情况会自动计入里程碑与规划进度。</div>${field('任务内容 *','title',t?.title,'text','wide')}${selectField('分类','category',[['work','工作'],['life','生活'],['learning','个人学习']],suggestedCategory)}${field('计划日期','planned_date',t?(t.planned_date||''):selectedDay,'date')}${field('截止日期（DDL，可留空）','deadline_date',t?(t.deadline_date||''):(milestone?.target_date||selectedDay),'date')}${field('计划时间','due_time',t?.due_time||'','time')}${selectField('优先级','priority',[['0','普通'],['1','优先'],['2','重要']],String(t?.priority||0))}<label class="field wide"><span>备注</span><textarea name="note">${esc(t?.note||'')}</textarea></label>`;
-  const fields=daily?`<div class="subtle-box field wide">每日任务 · ${dateLabel(t.planned_date)}。完成后，下一天会生成新的任务；不设 DDL。</div>${field('任务内容 *','title',t.title,'text','wide')}<label class="field wide"><span>备注</span><textarea name="note">${esc(t.note||'')}</textarea></label>`:parent?`<div class="subtle-box field wide">属于「${esc(parent.title)}」；分支沿用主任务的计划日期、分类和里程碑。</div>${shared}`:milestone?milestoneFields:`${field('任务内容 *','title',t?.title,'text','wide')}${selectField('分类','category',[['work','工作'],['life','生活'],['learning','个人学习']],t?.category||'work')}${field('计划日期','planned_date',t?(t.planned_date||''):selectedDay,'date')}${field('截止日期（DDL，可留空）','deadline_date',t?(t.deadline_date||''):selectedDay,'date')}${field('计划时间','due_time',t?.due_time||'','time')}${selectField('优先级','priority',[['0','普通'],['1','优先'],['2','重要']],String(t?.priority||0))}${selectField('关联规划','plan_id',[['','不关联'],...state.plans.map(p=>[String(p.id),p.title])],String(t?.plan_id||planId||''),'wide')}<label class="field wide"><span>备注</span><textarea name="note">${esc(t?.note||'')}</textarea></label>`;
-  showDialog(parent?(t?'编辑分支':'添加分支'):milestone?(t?'编辑里程碑待办':'添加里程碑待办'):(t?'编辑待办':'添加待办'),fields,data=>{
-    const payload=daily?{title:data.title,note:data.note}:parent?{title:data.title,deadline_date:data.deadline_date||null,due_time:data.due_time||null,priority:Number(data.priority),note:data.note,parent_task_id:parent.id}:milestone?{...data,priority:Number(data.priority),plan_id:milestone.plan_id,milestone_id:milestone.id,planned_date:data.planned_date||null,deadline_date:data.deadline_date||null,due_time:data.due_time||null}:{...data,priority:Number(data.priority),plan_id:data.plan_id||null,planned_date:data.planned_date||null,deadline_date:data.deadline_date||null,due_time:data.due_time||null};
+  const shared=`${field('任务内容 *','title',t?.title,'text','wide')}${field('截止日期（DDL，可留空）','deadline_date',t?(t.deadline_date||''):selectedDay,'date')}${field('计划时间','due_time',t?.due_time||'','time')}${selectField('优先级','priority',[['1','中'],['2','高'],['0','低']],String(t?.priority ?? 1))}<label class="field wide"><span>备注</span><textarea name="note">${esc(t?.note||'')}</textarea></label>`;
+  const milestoneFields=`<div class="subtle-box field wide">属于里程碑「${esc(milestone?.title||'')}」；完成情况会自动计入里程碑与规划进度。</div>${field('任务内容 *','title',t?.title,'text','wide')}${selectField('分类','category',[['work','工作'],['life','生活'],['learning','个人学习']],suggestedCategory)}${field('计划日期','planned_date',t?(t.planned_date||''):selectedDay,'date')}${field('截止日期（DDL，可留空）','deadline_date',t?(t.deadline_date||''):(milestone?.target_date||selectedDay),'date')}${field('计划时间','due_time',t?.due_time||'','time')}${selectField('优先级','priority',[['1','中'],['2','高'],['0','低']],String(t?.priority ?? 1))}<label class="field wide"><span>备注</span><textarea name="note">${esc(t?.note||'')}</textarea></label>`;
+  const fields=daily?`<div class="subtle-box field wide">每日任务 · ${dateLabel(t.planned_date)}。完成后，下一天会生成新的任务；不设 DDL。</div>${field('任务内容 *','title',t.title,'text','wide')}${selectField('优先级','priority',[['1','中'],['2','高'],['0','低']],String(t.priority ?? 1))}<label class="field wide"><span>备注</span><textarea name="note">${esc(t.note||'')}</textarea></label>`:parent?`<div class="subtle-box field wide">属于「${esc(parent.title)}」；分支沿用主任务的计划日期、分类和里程碑。</div>${shared}`:milestone?milestoneFields:`${field('任务内容 *','title',t?.title,'text','wide')}${selectField('分类','category',[['work','工作'],['life','生活'],['learning','个人学习']],t?.category||'work')}${field('计划日期','planned_date',t?(t.planned_date||''):selectedDay,'date')}${field('截止日期（DDL，可留空）','deadline_date',t?(t.deadline_date||''):selectedDay,'date')}${field('计划时间','due_time',t?.due_time||'','time')}${selectField('优先级','priority',[['1','中'],['2','高'],['0','低']],String(t?.priority ?? 1))}${selectField('关联规划','plan_id',[['','不关联'],...state.plans.map(p=>[String(p.id),p.title])],String(t?.plan_id||planId||''),'wide')}<label class="field wide"><span>备注</span><textarea name="note">${esc(t?.note||'')}</textarea></label>`;
+  showDialog(parent?(t?'编辑分支':'添加分支'):milestone?(t?'编辑里程碑待办':'添加里程碑待办'):(t?'编辑待办':'添加待办'),fields+(parent?existingBranchPicker(t||parent,!t):''),data=>{
+    if(parent && !t) {
+      const ids=Array.from(dialog.querySelectorAll('input[name="attach_task_ids"]:checked'),input=>Number(input.value));
+      if(ids.length){collapsedTasks.delete(parent.id);return change('tasks','PATCH',parent.id,{attach_task_ids:ids},'所选待办已移入分支');}
+    }
+    const payload=daily?{title:data.title,note:data.note,priority:Number(data.priority)}:parent?{title:data.title,deadline_date:data.deadline_date||null,due_time:data.due_time||null,priority:Number(data.priority),note:data.note,parent_task_id:parent.id}:milestone?{...data,priority:Number(data.priority),plan_id:milestone.plan_id,milestone_id:milestone.id,planned_date:data.planned_date||null,deadline_date:data.deadline_date||null,due_time:data.due_time||null}:{...data,priority:Number(data.priority),plan_id:data.plan_id||null,planned_date:data.planned_date||null,deadline_date:data.deadline_date||null,due_time:data.due_time||null};
+    if(t && parent && !daily) {
+      payload.attach_task_ids=Array.from(dialog.querySelectorAll('input[name="attach_task_ids"]:checked'),input=>Number(input.value));
+      if(payload.attach_task_ids.length)collapsedTasks.delete(t.id);
+    }
     collapsedTasks.delete(parent?.id);
-    return change('tasks',t?'PATCH':'POST',t?.id,payload,t?'待办已更新':parent?'分支已添加':'待办已添加');
+    return change('tasks',t?'PATCH':'POST',t?.id,payload,payload.attach_task_ids?.length?'所选待办已移入分支':t?'待办已更新':parent?'分支已添加':'待办已添加');
   },t?()=>change('tasks','DELETE',t.id,undefined,'待办已删除'):null,descendantTasks(t?.id).length?'删除此任务及下面所有分支？':'确定删除这条待办吗？');
 }
 function planEditor(id=null) {
@@ -345,6 +369,14 @@ document.addEventListener('click',async e=>{
   if(a==='edit-task')taskEditor(id);
   if(a==='new-linked-task')taskEditor(null,id);
   if(a==='new-milestone-task')taskEditor(null,null,null,id);
+  if(a==='attach-existing-branches'){
+    const ids=Array.from(dialog.querySelectorAll('input[name="attach_task_ids"]:checked'),input=>Number(input.value));
+    if(!ids.length){toast('请先勾选要移入的待办');return;}
+    btn.disabled=true;
+    collapsedTasks.delete(id);
+    const result=await change('tasks','PATCH',id,{attach_task_ids:ids},'所选待办已移入分支');
+    if(result)dialog.close();else btn.disabled=false;
+  }
   if(a==='new-branch')taskEditor(null,null,id);
   if(a==='clear-quick-deadline')document.querySelector('#quick-deadline').value='';
   if(a==='toggle-branch-open'){collapsedTasks.has(id)?collapsedTasks.delete(id):collapsedTasks.add(id);render();}
@@ -374,7 +406,7 @@ document.addEventListener('change',async e=>{
 document.addEventListener('submit',async e=>{
   if(e.target.id==='quick-add'){
     e.preventDefault();const d=Object.fromEntries(new FormData(e.target));
-    if(await change('tasks','POST',null,{title:d.title,category:d.category,planned_date:selectedDay,deadline_date:d.deadline_date||null},'待办已添加'))e.target.reset();
+    if(await change('tasks','POST',null,{title:d.title,category:d.category,priority:Number(d.priority ?? 1),planned_date:selectedDay,deadline_date:d.deadline_date||null},'待办已添加'))e.target.reset();
   }
   if(e.target.dataset.form==='add-prerequisite'||e.target.dataset.form==='add-milestone'){
     e.preventDefault();const collection=e.target.dataset.form==='add-prerequisite'?'prerequisites':'milestones';
